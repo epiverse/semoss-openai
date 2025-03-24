@@ -209,5 +209,166 @@ export default class SEMOSS {
      */
     async createChatCompletion(options) {
         await this._ensureInitialized();
+
+        const {model = 'gpt-4o', messages, stream = false} = options;
+
+        if (!messages || !Array.isArray(messages) || messages.length === 0) {
+            throw new Error("Messages array is required");
+        }
+
+        const modelId = this._getSemossModelId(model);
+
+        const content = this._formatMessagesForSemoss(messages);
+
+        if (stream) {
+            return this._createStreamingChatCompletion(modelId, content);
+        }
+
+        // For standard (non-streaming) requests
+        try {
+            const pixelQuery = `LLM(engine=["${modelId}"], command=["<encode>${content}</encode>"]);`;
+            const result = await runPixel(pixelQuery, this.insightId);
+
+            // Check for errors
+            if (result.errors && result.errors.length > 0) {
+                throw new Error(result.errors.join(', '));
+            }
+
+            // Format and return the response
+            return this._formatSemossResponse(result);
+
+        } catch (error) {
+            throw new Error(`SEMOSS API Error: ${error.message}`);
+        }
+    }
+
+    /**
+     * Create a streaming chat completion
+     * @private
+     * @param {string} modelId - SEMOSS model ID
+     * @param {string} content - Formatted message content
+     * @returns {Object} - An object with a method to iterate through chunks
+     */
+    _createStreamingChatCompletion(modelId, content) {
+        // Create a more compatible streaming implementation
+        return {
+            [Symbol.asyncIterator]: () => {
+                // State for the iterator
+                let isCollecting = true;
+                let fullResponse = '';
+                let lastResponseLength = 0;
+                let intervalId = null;
+                let runPixelPromise = null;
+                let isComplete = false;
+                let error = null;
+
+                // Return the iterator
+                return {
+                    async next() {
+                        // If we've encountered an error, throw it
+                        if (error) {
+                            throw error;
+                        }
+
+                        // If we're done, return done: true
+                        if (isComplete) {
+                            return {done: true, value: undefined};
+                        }
+
+                        try {
+                            // If this is the first call, start the process
+                            if (!runPixelPromise) {
+                                // Start the query
+                                const pixelQuery = `LLM(engine=["${modelId}"], command=["<encode>${content}</encode>"]);`;
+                                runPixelPromise = runPixel(pixelQuery, this.insightId || window.insightId);
+
+                                // Set up interval to check for partial responses
+                                intervalId = setInterval(async () => {
+                                    if (!isCollecting) return;
+
+                                    try {
+                                        const output = await partial(this.insightId);
+
+                                        if (output.message && output.message.total) {
+                                            fullResponse = output.message.total;
+                                        }
+                                    } catch (e) {
+                                        console.error("Error collecting partial response:", e);
+                                    }
+                                }, 250);
+
+                                // Wait for the initial response
+                                await new Promise(resolve => setTimeout(resolve, 300));
+                            }
+
+                            // Check if we have new content
+                            if (fullResponse.length > lastResponseLength) {
+                                const newContent = fullResponse.substring(lastResponseLength);
+                                lastResponseLength = fullResponse.length;
+
+                                // Format as an OpenAI-like streaming chunk
+                                return {
+                                    done: false,
+                                    value: {
+                                        id: 'chatcmpl-' + Date.now(),
+                                        object: 'chat.completion.chunk',
+                                        created: Math.floor(Date.now() / 1000),
+                                        model: 'semoss-llm',
+                                        choices: [
+                                            {
+                                                index: 0,
+                                                delta: {
+                                                    content: newContent
+                                                },
+                                                finish_reason: null
+                                            }
+                                        ]
+                                    }
+                                };
+                            }
+
+                            // If runPixelPromise is resolved, we're done
+                            const isResolved = await Promise.race([
+                                runPixelPromise.then(() => true),
+                                new Promise(resolve => setTimeout(() => resolve(false), 100))
+                            ]);
+
+                            if (isResolved) {
+                                isCollecting = false;
+                                clearInterval(intervalId);
+                                isComplete = true;
+
+                                return {
+                                    done: false,
+                                    value: {
+                                        id: 'chatcmpl-' + Date.now(),
+                                        object: 'chat.completion.chunk',
+                                        created: Math.floor(Date.now() / 1000),
+                                        model: 'semoss-llm',
+                                        choices: [
+                                            {
+                                                index: 0,
+                                                delta: {},
+                                                finish_reason: 'stop'
+                                            }
+                                        ]
+                                    }
+                                };
+                            }
+
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                            return this.next();
+
+                        } catch (e) {
+                            // Save error and throw in the next call
+                            error = new Error(`SEMOSS API Streaming Error: ${e.message}`);
+                            isCollecting = false;
+                            if (intervalId) clearInterval(intervalId);
+                            throw error;
+                        }
+                    }
+                };
+            }
+        };
     }
 }
