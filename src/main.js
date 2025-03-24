@@ -129,8 +129,74 @@ export default class SEMOSS {
             case 'system':
                 return 'System';
             default:
-                return role.charAt(0).toUpperCase() + role.slice(1); // Capitalize first letter
+                return role.charAt(0).toUpperCase() + role.slice(1);
         }
+    }
+
+    /**
+     * Get SEMOSS model ID from OpenAI model name
+     * @private
+     * @param {string} openaiModel - OpenAI model name
+     * @returns {string} - SEMOSS model ID
+     */
+    _getSemossModelId(openaiModel) {
+        const modelId = this.modelMap[openaiModel];
+
+        if (!modelId) {
+            // Default to Meta Llama 3 8B, if model not found
+            return '305f694d-c91c-400f-bd6c-b7e1dfbb5a4b';
+        }
+
+        return modelId;
+    }
+
+    /**
+     * Format SEMOSS response to match OpenAI response format
+     * @private
+     * @param {Object} semossResponse - Response from SEMOSS API
+     * @returns {Object} - OpenAI-like response object
+     */
+    _formatSemossResponse(semossResponse) {
+        // Extract the actual response text
+        let responseText = 'No response received';
+        let tokenCount = 0;
+
+        if (semossResponse.pixelReturn &&
+            semossResponse.pixelReturn.length > 0 &&
+            semossResponse.pixelReturn[0].output) {
+
+            const output = semossResponse.pixelReturn[0].output;
+
+            if (typeof output === 'object' && output.response) {
+                responseText = output.response;
+                tokenCount = output.numberOfTokensInResponse || 0;
+            } else if (typeof output === 'string') {
+                responseText = output;
+            }
+        }
+
+        // Create an OpenAI-like response object
+        return {
+            id: semossResponse.insightId || 'chatcmpl-' + Date.now(),
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: 'semoss-llm',
+            choices: [
+                {
+                    index: 0,
+                    message: {
+                        role: 'assistant',
+                        content: responseText
+                    },
+                    finish_reason: 'stop'
+                }
+            ],
+            usage: {
+                prompt_tokens: 0, // Need to locate this in SEMOSS response
+                completion_tokens: tokenCount,
+                total_tokens: tokenCount
+            }
+        };
     }
 
     /**
