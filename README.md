@@ -1,2 +1,3 @@
-# semoss-openai
-A wrapper for the SEMOSS SDK to make it compatible with the familiar OpenAI's API
+# SEMOSS OpenAI-compatible API
+
+A wrapper for the [SEMOSS SDK](https://www.jsdelivr.com/package/npm/@semoss/sdk) to make it compatible with OpenAI's API.
